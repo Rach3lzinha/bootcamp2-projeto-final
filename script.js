@@ -1,19 +1,85 @@
+
 // --- CONFIGURAÇÃO DO SUPABASE ---
 const supabaseUrl = 'https://pqsqohvfbkvbwizndbfn.supabase.co';
 const supabaseKey = 'sb_publishable_tq7mlls93ac06SFAcUsBrA_cuHBZnjE';
+
 const _supabase = supabase.createClient(supabaseUrl, supabaseKey);
-// Função para gravar receitas favoritadas na tabela 'favoritos' do Supabase
-async function salvarFavoritoNoBanco(nomeCookie) {
+
+// --- FAVORITOS NO SUPABASE ---
+
+// Consulta os favoritos cadastrados no banco
+async function buscarFavoritosNoBanco() {
   const { data, error } = await _supabase
     .from('favoritos')
-    .insert([{ receita: nomeCookie }]);
+    .select('id, receita');
 
   if (error) {
-    console.error('Erro ao guardar no Supabase:', error);
-  } else {
-    console.log('Cookie guardado nos favoritos do banco:', nomeCookie);
+    console.error('Erro ao buscar favoritos:', error);
+    showToast('Não foi possível carregar os favoritos.');
+    return {};
   }
+
+ console.log('Favoritos recebidos do Supabase:', data);
+
+const favoritos = {};
+
+data.forEach(item => {
+  console.log('Receita encontrada no banco:', item.receita);
+
+  const flavor = flavors.find(
+    flavor => flavor.name.trim() === item.receita.trim()
+  );
+
+  if (flavor) {
+    favoritos[flavor.id] = true;
+  } else {
+    console.warn('Cookie não encontrado no catálogo:', item.receita);
+  }
+});
+
+console.log('Favoritos carregados no estado:', favoritos);
+
+  return favoritos;
 }
+
+// Salva um favorito no banco
+async function salvarFavoritoNoBanco(nomeCookie) {
+  const { error } = await _supabase
+    .from('favoritos')
+    .upsert(
+      { receita: nomeCookie },
+      {
+        onConflict: 'receita',
+        ignoreDuplicates: true
+      }
+    );
+
+  if (error) {
+    console.error('Erro ao salvar favorito:', error);
+    return false;
+  }
+
+  console.log('Favorito salvo:', nomeCookie);
+  return true;
+}
+
+// Exclui um favorito do banco
+async function excluirFavoritoNoBanco(nomeCookie) {
+  const { error } = await _supabase
+    .from('favoritos')
+    .delete()
+    .eq('receita', nomeCookie);
+
+  if (error) {
+    console.error('Erro ao excluir favorito:', error);
+    return false;
+  }
+
+  console.log('Favorito excluído:', nomeCookie);
+  return true;
+}
+
+// --- CATÁLOGO DE COOKIES ---
 
 const flavors = [
   { id: 'choco-classico', name: 'Choco clássico', description: 'massa amanteigada + gotas belgas', price: 12.9, category: 'queridinhos', tone: 'tone-orange', tag: 'queridinho' },
@@ -42,58 +108,97 @@ const flavors = [
   { id: 'caju-caramelo', name: 'Caju & caramelo', description: 'castanha de caju + caramelo', price: 15.9, category: 'queridinhos', tone: 'tone-orange', tag: 'novo' }
 ];
 
-const state = { filter: 'todos', search: '', cart: JSON.parse(localStorage.getItem('cookieira-cart') || '{}') };
-const money = value => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+// --- ESTADO DA APLICAÇÃO ---
+
+const state = {
+  filter: 'todos',
+  search: '',
+  cart: JSON.parse(localStorage.getItem('cookieira-cart') || '{}'),
+  favorites: {}
+};
+
+const money = value => value.toLocaleString('pt-BR', {
+  style: 'currency',
+  currency: 'BRL'
+});
+
 const byId = id => document.getElementById(id);
+
+// --- VISUAL DOS PRODUTOS ---
 
 function productVisual(flavor, compact = false) {
   return `<div class="product-visual ${flavor.tone}${compact ? ' cart-item-visual' : ''}"><span class="product-cookie" aria-hidden="true"></span></div>`;
 }
 
+// --- RENDERIZAÇÃO DO CATÁLOGO ---
+
 function renderCatalog() {
   const grid = byId('catalogGrid');
   const search = state.search.toLocaleLowerCase('pt-BR');
-  const favorites = JSON.parse(localStorage.getItem('cookieira-favorites') || '{}');
 
   const visible = flavors.filter(flavor => {
     let matchesFilter = false;
+
     if (state.filter === 'todos') {
       matchesFilter = true;
     } else if (state.filter === 'favoritos') {
-      matchesFilter = !!favorites[flavor.id];
+      matchesFilter = !!state.favorites[flavor.id];
     } else {
       matchesFilter = flavor.category === state.filter;
     }
-    const matchesSearch = !search || `${flavor.name} ${flavor.description} ${flavor.category}`.toLocaleLowerCase('pt-BR').includes(search);
+
+    const matchesSearch = !search ||
+      `${flavor.name} ${flavor.description} ${flavor.category}`
+        .toLocaleLowerCase('pt-BR')
+        .includes(search);
+
     return matchesFilter && matchesSearch;
   });
 
   byId('emptyState').hidden = visible.length > 0;
-  
+
   if (state.filter === 'favoritos' && visible.length === 0) {
-    byId('emptyState').textContent = 'Você ainda não salvou nenhum cookie nos favoritos. Clique no coração ♡ dos cookies para salvar!';
+    byId('emptyState').textContent =
+      'Você ainda não salvou nenhum cookie nos favoritos. Clique no coração ♡ dos cookies para salvar!';
   } else if (visible.length === 0) {
-    byId('emptyState').textContent = 'Nenhum cookie encontrou esse caminho. Tente outro sabor ou limpe a busca.';
+    byId('emptyState').textContent =
+      'Nenhum cookie encontrou esse caminho. Tente outro sabor ou limpe a busca.';
   }
 
   grid.innerHTML = visible.map(flavor => {
-    const isSaved = favorites[flavor.id];
+    const isSaved = !!state.favorites[flavor.id];
+
     return `
       <article class="product-card">
         ${productVisual(flavor)}
         <span class="card-tag">${flavor.tag}</span>
-        <button class="favorite-button ${isSaved ? 'saved' : ''}" type="button" data-favorite="${flavor.id}" aria-label="Favoritar ${flavor.name}">${isSaved ? '♥' : '♡'}</button>
+        <button
+          class="favorite-button ${isSaved ? 'saved' : ''}"
+          type="button"
+          data-favorite="${flavor.id}"
+          aria-label="${isSaved ? 'Remover dos favoritos' : 'Favoritar'} ${flavor.name}"
+        >${isSaved ? '♥' : '♡'}</button>
         <div class="product-info">
           <h3 class="product-name">${flavor.name}</h3>
           <p class="product-description">${flavor.description}</p>
-          <div class="product-bottom"><strong class="product-price">${money(flavor.price)}</strong><button class="product-add" type="button" data-add="${flavor.id}" aria-label="Adicionar ${flavor.name}">+</button></div>
+          <div class="product-bottom">
+            <strong class="product-price">${money(flavor.price)}</strong>
+            <button class="product-add" type="button" data-add="${flavor.id}" aria-label="Adicionar ${flavor.name}">+</button>
+          </div>
         </div>
       </article>`;
   }).join('');
 }
 
+// --- CARRINHO ---
+
 function cartEntries() {
-  return Object.entries(state.cart).map(([id, quantity]) => ({ flavor: flavors.find(flavor => flavor.id === id), quantity })).filter(item => item.flavor && item.quantity > 0);
+  return Object.entries(state.cart)
+    .map(([id, quantity]) => ({
+      flavor: flavors.find(flavor => flavor.id === id),
+      quantity
+    }))
+    .filter(item => item.flavor && item.quantity > 0);
 }
 
 function saveCart() {
@@ -103,38 +208,65 @@ function saveCart() {
 }
 
 function updateCartCount() {
-  const count = Object.values(state.cart).reduce((total, quantity) => total + quantity, 0);
+  const count = Object.values(state.cart)
+    .reduce((total, quantity) => total + quantity, 0);
+
   byId('cartCount').textContent = count;
-  byId('cartCount').setAttribute('aria-label', `${count} item${count === 1 ? '' : 's'} no carrinho`);
+  byId('cartCount').setAttribute(
+    'aria-label',
+    `${count} item${count === 1 ? '' : 's'} no carrinho`
+  );
 }
 
 function renderCart() {
   const entries = cartEntries();
   const items = byId('cartItems');
+
   byId('cartEmpty').style.display = entries.length ? 'none' : 'flex';
   byId('cartSummary').hidden = !entries.length;
+
   items.innerHTML = entries.map(({ flavor, quantity }) => `
     <div class="cart-item">
       ${productVisual(flavor, true)}
-      <div class="cart-item-info"><h3>${flavor.name}</h3><p>${money(flavor.price)} por unidade</p><div class="quantity-controls"><button type="button" data-decrease="${flavor.id}" aria-label="Diminuir quantidade">−</button><span>${quantity}</span><button type="button" data-increase="${flavor.id}" aria-label="Aumentar quantidade">+</button></div></div>
+      <div class="cart-item-info">
+        <h3>${flavor.name}</h3>
+        <p>${money(flavor.price)} por unidade</p>
+        <div class="quantity-controls">
+          <button type="button" data-decrease="${flavor.id}" aria-label="Diminuir quantidade">−</button>
+          <span>${quantity}</span>
+          <button type="button" data-increase="${flavor.id}" aria-label="Aumentar quantidade">+</button>
+        </div>
+      </div>
       <strong class="cart-item-price">${money(flavor.price * quantity)}</strong>
     </div>`).join('');
-  const subtotal = entries.reduce((sum, { flavor, quantity }) => sum + flavor.price * quantity, 0);
+
+  const subtotal = entries.reduce(
+    (sum, { flavor, quantity }) => sum + flavor.price * quantity,
+    0
+  );
+
   byId('cartSubtotal').textContent = money(subtotal);
 }
 
 function addToCart(id) {
   state.cart[id] = (state.cart[id] || 0) + 1;
   saveCart();
+
   const flavor = flavors.find(item => item.id === id);
   showToast(`${flavor.name} entrou no carrinho`);
 }
 
 function changeQuantity(id, amount) {
   state.cart[id] = (state.cart[id] || 0) + amount;
-  if (state.cart[id] <= 0) delete state.cart[id];
+
+  if (state.cart[id] <= 0) {
+    delete state.cart[id];
+  }
+
   saveCart();
 }
+
+// --- CONTROLE DO CARRINHO ---
 
 function openCart() {
   byId('cartDrawer').classList.add('open');
@@ -150,16 +282,70 @@ function closeCart() {
   document.body.classList.remove('drawer-open');
 }
 
+// --- MENSAGENS ---
+
 function showToast(message) {
   const toast = byId('toast');
+
   toast.textContent = message;
   toast.classList.add('show');
+
   window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2400);
+
+  showToast.timer = window.setTimeout(
+    () => toast.classList.remove('show'),
+    2400
+  );
 }
 
+// --- FAVORITAR E DESFAVORITAR ---
+
+async function alternarFavorito(id, button) {
+  const flavor = flavors.find(item => item.id === id);
+
+  if (!flavor) return;
+
+  button.disabled = true;
+
+  const jaEstaSalvo = !!state.favorites[id];
+  let sucesso = false;
+
+  if (jaEstaSalvo) {
+    sucesso = await excluirFavoritoNoBanco(flavor.name);
+
+    if (sucesso) {
+      delete state.favorites[id];
+      showToast(`${flavor.name} removido dos favoritos`);
+    }
+  } else {
+    sucesso = await salvarFavoritoNoBanco(flavor.name);
+
+    if (sucesso) {
+      state.favorites[id] = true;
+      showToast(`${flavor.name} adicionado aos favoritos`);
+    }
+  }
+
+  button.disabled = false;
+
+  if (!sucesso) {
+    showToast('Não foi possível atualizar os favoritos.');
+    return;
+  }
+
+  renderCatalog();
+}
+
+// --- API OPEN FOOD FACTS ---
+
 function escapeHTML(value = '') {
-  return String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' }[character]));
+  return String(value).replace(/[&<>'"]/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#039;',
+    '"': '&quot;'
+  }[character]));
 }
 
 async function searchOpenFoodFacts(term) {
@@ -167,102 +353,174 @@ async function searchOpenFoodFacts(term) {
   const results = byId('apiResults');
   const button = byId('apiSearchButton');
   const cleanTerm = term.trim();
+
   if (!cleanTerm) {
     status.textContent = 'Digite um ingrediente ou produto para começar.';
     results.innerHTML = '<div class="api-placeholder"><span>⌕</span><p>qual cookie você<br />quer investigar?</p></div>';
     return;
   }
+
   button.disabled = true;
   button.textContent = 'buscando...';
+
   status.textContent = `Consultando produtos reais para “${cleanTerm}”...`;
   results.innerHTML = '<div class="api-placeholder"><span>◌</span><p>abrindo o forno<br />da internet...</p></div>';
+
   const endpoint = `https://world.openfoodfacts.org/api/v2/search?search_terms=${encodeURIComponent(cleanTerm)}&fields=product_name,brands,categories,nutriscore_grade,image_front_small_url&page_size=4`;
+
   try {
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error('API indisponível');
+    const response = await fetch(endpoint, {
+      headers: { Accept: 'application/json' }
+    });
+
+    if (!response.ok) {
+      throw new Error('API indisponível');
+    }
+
     const data = await response.json();
-    const products = Array.isArray(data.products) ? data.products.filter(product => product.product_name).slice(0, 4) : [];
+
+    const products = Array.isArray(data.products)
+      ? data.products.filter(product => product.product_name).slice(0, 4)
+      : [];
+
     if (!products.length) {
       status.textContent = 'A busca terminou, mas nenhum produto apareceu.';
       results.innerHTML = '<div class="api-placeholder"><span>⌁</span><p>nenhum resultado por aqui.<br />tente outro termo.</p></div>';
       return;
     }
-    status.textContent = `${products.length} descoberta${products.length > 1 ? 's' : ''} encontrada${products.length > 1 ? 's' : ''} na base aberta.`;
+
+    status.textContent =
+      `${products.length} descoberta${products.length > 1 ? 's' : ''} encontrada${products.length > 1 ? 's' : ''} na base aberta.`;
+
     results.innerHTML = products.map(product => {
       const name = escapeHTML(product.product_name);
       const brand = escapeHTML(product.brands || 'marca não informada');
-      const categories = escapeHTML((product.categories || 'categoria não informada').split(',').slice(0, 2).join(', '));
-      const grade = escapeHTML((product.nutriscore_grade || '—').toUpperCase());
-      const image = product.image_front_small_url ? `<img src="${escapeHTML(product.image_front_small_url)}" alt="" loading="lazy" />` : '<span>◒</span>';
-      return `<article class="api-result-card"><div class="api-thumb">${image}</div><div><p class="api-result-name">${name}</p><p class="api-result-meta">${brand} · ${categories}</p></div><div class="api-result-grade"><strong>${grade}</strong>nutriscore</div></article>`;
+      const categories = escapeHTML(
+        (product.categories || 'categoria não informada')
+          .split(',')
+          .slice(0, 2)
+          .join(', ')
+      );
+      const grade = escapeHTML(
+        (product.nutriscore_grade || '—').toUpperCase()
+      );
+
+      const image = product.image_front_small_url
+        ? `<img src="${escapeHTML(product.image_front_small_url)}" alt="" loading="lazy" />`
+        : '<span>◒</span>';
+
+      return `
+        <article class="api-result-card">
+          <div class="api-thumb">${image}</div>
+          <div>
+            <p class="api-result-name">${name}</p>
+            <p class="api-result-meta">${brand} · ${categories}</p>
+          </div>
+          <div class="api-result-grade">
+            <strong>${grade}</strong>nutriscore
+          </div>
+        </article>`;
     }).join('');
+
   } catch (error) {
+    console.error('Erro na API Open Food Facts:', error);
     status.textContent = 'Não conseguimos alcançar a base agora.';
     results.innerHTML = '<div class="api-placeholder"><span>☁</span><p>o radar tirou uma pausa.<br />tente novamente em instantes.</p></div>';
+
   } finally {
     button.disabled = false;
     button.innerHTML = 'buscar <span aria-hidden="true">↗</span>';
   }
 }
 
-function init() {
+// --- INICIALIZAÇÃO ---
+
+async function init() {
+  // Carrega os favoritos do banco antes de exibir o catálogo
+  state.favorites = await buscarFavoritosNoBanco();
+
   renderCatalog();
   renderCart();
   updateCartCount();
-  byId('catalogSearch').addEventListener('input', event => { state.search = event.target.value; renderCatalog(); });
-  byId('filterList').addEventListener('click', event => {
-    const button = event.target.closest('[data-filter]');
-    if (!button) return;
-    state.filter = button.dataset.filter;
-    document.querySelectorAll('.filter-button').forEach(item => item.classList.toggle('active', item === button));
+
+  byId('catalogSearch').addEventListener('input', event => {
+    state.search = event.target.value;
     renderCatalog();
   });
-  byId('catalogGrid').addEventListener('click', event => {
+
+  byId('filterList').addEventListener('click', event => {
+    const button = event.target.closest('[data-filter]');
+
+    if (!button) return;
+
+    state.filter = button.dataset.filter;
+
+    document.querySelectorAll('.filter-button').forEach(item => {
+      item.classList.toggle('active', item === button);
+    });
+
+    renderCatalog();
+  });
+
+  byId('catalogGrid').addEventListener('click', async event => {
     const add = event.target.closest('[data-add]');
-    if (add) addToCart(add.dataset.add);
-    
-    const favorite = event.target.closest('[data-favorite]') || event.target.closest('.favorite-button');
-    if (favorite) { 
-      const card = favorite.closest('.product-card');
-      const cookieName = card.querySelector('.product-name').textContent;
-      const flavor = flavors.find(f => f.name === cookieName);
-      const flavorId = favorite.dataset.favorite || (flavor ? flavor.id : null);
-      
-      const favorites = JSON.parse(localStorage.getItem('cookieira-favorites') || '{}');
-      
-      if (flavorId) {
-        favorites[flavorId] = !favorites[flavorId];
-        localStorage.setItem('cookieira-favorites', JSON.stringify(favorites));
 
-        favorite.classList.toggle('saved', favorites[flavorId]);
-        favorite.textContent = favorites[flavorId] ? '♥' : '♡'; 
+    if (add) {
+      addToCart(add.dataset.add);
+      return;
+    }
 
-        if (favorites[flavorId]) {
-          salvarFavoritoNoBanco(cookieName);
-        }
+    const favorite = event.target.closest('[data-favorite]');
 
-        if (state.filter === 'favoritos') {
-          renderCatalog();
-        }
-      }
+    if (favorite) {
+      await alternarFavorito(favorite.dataset.favorite, favorite);
     }
   });
+
   byId('cartItems').addEventListener('click', event => {
     const increase = event.target.closest('[data-increase]');
     const decrease = event.target.closest('[data-decrease]');
-    if (increase) changeQuantity(increase.dataset.increase, 1);
-    if (decrease) changeQuantity(decrease.dataset.decrease, -1);
+
+    if (increase) {
+      changeQuantity(increase.dataset.increase, 1);
+    }
+
+    if (decrease) {
+      changeQuantity(decrease.dataset.decrease, -1);
+    }
   });
+
   byId('cartTrigger').addEventListener('click', openCart);
   byId('closeDrawer').addEventListener('click', closeCart);
   byId('drawerBackdrop').addEventListener('click', closeCart);
   byId('goToCatalog').addEventListener('click', closeCart);
-  byId('checkoutButton').addEventListener('click', () => showToast('Checkout demonstrativo — seu pedido está salvo!'));
-  byId('apiSearchButton').addEventListener('click', () => searchOpenFoodFacts(byId('apiTerm').value));
-  byId('apiTerm').addEventListener('keydown', event => { if (event.key === 'Enter') searchOpenFoodFacts(event.target.value); });
+
+  byId('checkoutButton').addEventListener('click', () => {
+    showToast('Checkout demonstrativo — seu pedido está salvo!');
+  });
+
+  byId('apiSearchButton').addEventListener('click', () => {
+    searchOpenFoodFacts(byId('apiTerm').value);
+  });
+
+  byId('apiTerm').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      searchOpenFoodFacts(event.target.value);
+    }
+  });
+
   document.addEventListener('keydown', event => {
-    if (event.key === '/' && document.activeElement.tagName !== 'INPUT') { event.preventDefault(); byId('catalogSearch').focus(); }
-    if (event.key === 'Escape') closeCart();
+    if (
+      event.key === '/' &&
+      document.activeElement.tagName !== 'INPUT'
+    ) {
+      event.preventDefault();
+      byId('catalogSearch').focus();
+    }
+
+    if (event.key === 'Escape') {
+      closeCart();
+    }
   });
 }
 
